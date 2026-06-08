@@ -15,28 +15,28 @@ export default function App() {
     chats,
     activeChat,
     messages,
-    isStreaming,
-    goalIteration,
+    activeStreams,
     defaultModel,
     setChats,
     setActiveChat,
     upsertChat,
     removeChat,
     setMessages,
-    appendToken,
-    replaceStreamingMessage,
-    setStreaming,
-    setGoalIteration,
     setConnectionMode,
     setDirectConfig,
     setCustomEndpointConfig,
     setDefaultModel
   } = useAppStore()
+  const appendToken = useAppStore((state) => state.appendToken)
+  const setStreaming = useAppStore((state) => state.setStreaming)
+  const setLlmStatus = useAppStore((state) => state.setLlmStatus)
+  const setGoalIteration = useAppStore((state) => state.setGoalIteration)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('connection')
   const [preloadReady, setPreloadReady] = useState(() => Boolean(window.api))
   const [bootReady, setBootReady] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
+  const isStreaming = Boolean(activeChat && activeStreams[activeChat.id]?.isStreaming)
 
   // Auto-fetch models whenever custom endpoint URL/key changes
   useEndpointModels()
@@ -150,74 +150,92 @@ export default function App() {
   useEffect(() => {
     if (!window.api) return
 
-    let tokenBuffer = ''
-    let flushTimer: ReturnType<typeof setTimeout> | null = null
+    const tokenBuffers: Record<string, string> = {}
+    const flushTimers: Record<string, ReturnType<typeof setTimeout> | null> = {}
 
-    const flushTokens = () => {
-      flushTimer = null
-      if (tokenBuffer) {
-        const batch = tokenBuffer
-        tokenBuffer = ''
-        appendToken(batch)
+    const flushTokens = (chatId: string) => {
+      flushTimers[chatId] = null
+      if (tokenBuffers[chatId]) {
+        const batch = tokenBuffers[chatId]
+        tokenBuffers[chatId] = ''
+        appendToken(chatId, batch)
       }
     }
 
     window.api.llm.removeStreamListeners()
 
-    window.api.llm.onToken((token) => {
-      tokenBuffer += token
-      if (flushTimer === null) {
-        flushTimer = setTimeout(flushTokens, 16)
+    window.api.llm.onToken((chatId, token) => {
+      tokenBuffers[chatId] = (tokenBuffers[chatId] || '') + token
+      if (!flushTimers[chatId]) {
+        flushTimers[chatId] = setTimeout(() => flushTokens(chatId), 16)
       }
     })
 
-    window.api.llm.onDone(() => {
-      if (flushTimer !== null) {
-        clearTimeout(flushTimer)
-        flushTimer = null
+    window.api.llm.onDone((chatId) => {
+      if (flushTimers[chatId]) {
+        clearTimeout(flushTimers[chatId]!)
+        flushTimers[chatId] = null
       }
-      flushTokens()
-      setStreaming(false)
-      setGoalIteration(null)
+      flushTokens(chatId)
+      setStreaming(chatId, false)
+      setLlmStatus(chatId, null)
+      setGoalIteration(chatId, null)
     })
 
-    window.api.llm.onError((message) => {
-      if (flushTimer !== null) {
-        clearTimeout(flushTimer)
-        flushTimer = null
+    window.api.llm.onError((chatId, message) => {
+      if (flushTimers[chatId]) {
+        clearTimeout(flushTimers[chatId]!)
+        flushTimers[chatId] = null
       }
-      flushTokens()
+      flushTokens(chatId)
       const errorMessage: Message = {
         id: `error-${Date.now()}`,
-        chat_id: useAppStore.getState().activeChat?.id ?? '',
+        chat_id: chatId,
         role: 'assistant',
         content: message,
         created_at: Date.now(),
         isError: true
       }
-      replaceStreamingMessage(errorMessage)
-      setStreaming(false)
-      setGoalIteration(null)
+      
+      // Because we use activeStreams for the streaming bubble, we can just clear it
+      // and add the real error message.
+      setStreaming(chatId, false)
+      setLlmStatus(chatId, null)
+      setGoalIteration(chatId, null)
+      
+      // We can invoke the backend to persist this error message if we want,
+      // but for now we just push it to the active UI state if the user is on this chat.
+      const addMsg = useAppStore.getState().addMessage
+      addMsg(errorMessage)
     })
 
     window.api.llm.onMessageCreated((message) => {
-      if (flushTimer !== null) {
-        clearTimeout(flushTimer)
-        flushTimer = null
+      if (flushTimers[message.chat_id]) {
+        clearTimeout(flushTimers[message.chat_id]!)
+        flushTimers[message.chat_id] = null
       }
-      flushTokens()
-      replaceStreamingMessage(message)
+      flushTokens(message.chat_id)
+      
+      setStreaming(message.chat_id, false)
+      setLlmStatus(message.chat_id, null)
+      setGoalIteration(message.chat_id, null)
+      
+      const addMsg = useAppStore.getState().addMessage
+      addMsg(message)
     })
 
-    window.api.llm.onGoalIteration((iteration) => setGoalIteration(iteration))
-
+    window.api.llm.onGoalIteration((chatId, iteration) => setGoalIteration(chatId, iteration))
+    window.api.llm.onStatus((chatId, status) => setLlmStatus(chatId, status))
+    
     window.api.llm.onChatUpdated((chat) => upsertChat(chat))
 
     return () => {
-      if (flushTimer !== null) clearTimeout(flushTimer)
+      for (const timer of Object.values(flushTimers)) {
+        if (timer !== null) clearTimeout(timer)
+      }
       window.api?.llm.removeStreamListeners()
     }
-  }, [appendToken, replaceStreamingMessage, setStreaming, upsertChat])
+  }, [appendToken, setStreaming, setLlmStatus, setGoalIteration, upsertChat])
 
   useEffect(() => {
     document.title = activeChat ? `${activeChat.title} — Prism` : 'Prism'
@@ -247,7 +265,8 @@ export default function App() {
   const sendMessage = useCallback(
     async (content: string) => {
       if (!window.api || !activeChat || isStreaming || !content.trim()) return
-      setStreaming(true)
+      setStreaming(activeChat.id, true)
+      setLlmStatus(activeChat.id, null)
       
       let text = content.trim()
       
@@ -288,7 +307,7 @@ export default function App() {
         window.api.llm.stream(activeChat.id, text, activeChat.model)
       }
     },
-    [activeChat, isStreaming, setStreaming]
+    [activeChat, isStreaming, setStreaming, setLlmStatus]
   )
 
   const deleteChat = useCallback(
@@ -369,8 +388,7 @@ export default function App() {
       />
       <main className="chat-main">
         <TopBar chat={normalizedActiveChat} onTitleChange={updateTitle} onMetaChange={updateMeta} />
-        <ChatWindow chat={normalizedActiveChat} messages={messages} isStreaming={isStreaming} goalIteration={goalIteration} onSend={sendMessage} />
-      </main>
+        <ChatWindow chat={normalizedActiveChat} messages={messages} onSend={sendMessage} />  </main>
       {settingsOpen && <SettingsModal initialTab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   )

@@ -2,6 +2,7 @@ import { Check, Copy, Square, Volume2 } from 'lucide-react'
 import React, { Children, isValidElement, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
+import remarkBreaks from 'remark-breaks'
 import type { Components } from 'react-markdown'
 import type { Message } from '../types'
 
@@ -35,7 +36,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, modelN
       )}
       <div className="message-content">
         {message.role === 'user' && <div className="message-meta user-label">{label}</div>}
-        <ReactMarkdown rehypePlugins={[rehypeHighlight]} components={markdownComponents}>
+        <ReactMarkdown remarkPlugins={[remarkBreaks]} rehypePlugins={[rehypeHighlight]} components={markdownComponents}>
           {message.content || ' '}
         </ReactMarkdown>
         {message.isStreaming && <span className="stream-cursor" />}

@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, ipcMain, shell, app, type IpcMainInvokeEvent } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -23,7 +23,7 @@ import {
   type Provider,
   type Role
 } from './db'
-import { fetchAvailableModels, generateChatTitle, extractMemories, getProviderFromModel, streamCompletion, PROVIDER_CONFIG, cancelStream, isCancelled, resetCancelled, compactHistory } from './llm'
+import { fetchAvailableModels, generateChatTitle, extractMemories, getProviderFromModel, streamCompletion, PROVIDER_CONFIG, cancelStream, resetCancelled, isStreamCancelled, compactHistory } from './llm'
 import {
   DEFAULT_ENDPOINT_URL,
   DEFAULT_MODEL,
@@ -133,33 +133,27 @@ export function registerIpcHandlers(): void {
           history,
           (token) => {
             assistantContent += token
-            send('llm:token', token)
+            send('llm:token', chatId, token)
           },
           () => undefined,
           (message) => {
             failed = true
-            send('llm:error', message)
-          }
+            send('llm:error', chatId, message)
+          },
+          (name, args) => {
+            if (name === 'search_web') {
+              send('llm:status', chatId, `Searching the web for "${args}"...`)
+            }
+          },
+          (content) => {
+            createMessage({ chatId, role: 'system', content })
+          },
+          chatId
         )
 
         if (failed) return
 
-        if (isCancelled) {
-          // Asynchronously compact history if it exceeds threshold
-          const allMsgs = getMessages(chatId)
-          let recentCount = allMsgs.length
-          if (chat.summary_through_id) {
-            const idx = allMsgs.findIndex(m => m.id === chat.summary_through_id)
-            if (idx !== -1) recentCount = allMsgs.length - (idx + 1)
-          }
-          if (recentCount > 25) {
-            void compactHistory(chat, allMsgs, config)
-          }
-
-          send('llm:done')
-          return
-        }
-
+        // Removed dead isCancelled block
         const assistant = createMessage({ chatId, role: 'assistant', content: assistantContent })
         send('messages:created', assistant)
 
@@ -181,9 +175,9 @@ export function registerIpcHandlers(): void {
           void compactHistory(chat, allMsgs, config)
         }
 
-        send('llm:done')
+        send('llm:done', chatId)
       } catch (error) {
-        send('llm:error', errorToMessage(error))
+        send('llm:error', chatId, errorToMessage(error))
       }
     })()
   })
@@ -202,7 +196,7 @@ export function registerIpcHandlers(): void {
         const existingMessages = getMessages(chatId)
         const config = loadAppConfig()
         
-        resetCancelled()
+        resetCancelled(chatId)
         
         // Save initial goal as user message
         const user = createMessage({ chatId, role: 'user', content: `/goal ${userMessage}` })
@@ -216,8 +210,8 @@ export function registerIpcHandlers(): void {
         let success = false
         let isFirstIteration = true
 
-        while (iterations < MAX_ITERATIONS && !success && !isCancelled) {
-          send('llm:goal-iteration', { current: iterations + 1, max: MAX_ITERATIONS })
+        while (iterations < MAX_ITERATIONS && !success && !isStreamCancelled(chatId)) {
+          send('llm:goal-iteration', chatId, { current: iterations + 1, max: MAX_ITERATIONS })
           
           let assistantContent = ''
           let failed = false
@@ -233,16 +227,25 @@ export function registerIpcHandlers(): void {
             history,
             (token) => {
               assistantContent += token
-              send('llm:token', token)
+              send('llm:token', chatId, token)
             },
             () => undefined,
             (message) => {
               failed = true
-              send('llm:error', message)
-            }
+              send('llm:error', chatId, message)
+            },
+            (name, args) => {
+              if (name === 'search_web') {
+                send('llm:status', chatId, `Searching the web for "${args}"...`)
+              }
+            },
+            (content) => {
+              createMessage({ chatId, role: 'system', content })
+            },
+            chatId
           )
 
-          if (failed || isCancelled) break
+          if (failed || isStreamCancelled(chatId)) break
 
           // Save the AI's output to DB and history
           const assistant = createMessage({ chatId, role: 'assistant', content: assistantContent })
@@ -288,15 +291,15 @@ export function registerIpcHandlers(): void {
           void compactHistory(chat, allMsgs, config)
         }
 
-        send('llm:done')
+        send('llm:done', chatId)
       } catch (error) {
-        send('llm:error', errorToMessage(error))
+        send('llm:error', chatId, errorToMessage(error))
       }
     })()
   })
 
-  ipcMain.on('llm:cancel', () => {
-    cancelStream()
+  ipcMain.on('llm:cancel', (_event, chatId: string) => {
+    cancelStream(chatId)
   })
 
   handle('settings:get', (_event, key: string) => getSetting(key))
@@ -391,8 +394,11 @@ export function registerIpcHandlers(): void {
             try { fs.unlinkSync(webmPath) } catch (e) {}
             return { success: true, text: data.text.trim(), error: null }
           }
-        } catch (err) {
-          console.error('[STT] Groq API failed, falling back to local Whisper:', err)
+        } catch (error: any) {
+          console.error("Groq STT failed, falling back to local whisper", error)
+          try {
+            fs.writeFileSync('/tmp/groq_error.log', String(error?.stack || error))
+          } catch (e) {}
         }
       }
 
@@ -479,18 +485,19 @@ function loadAppConfig(): AppConfig {
   return {
     mode,
     direct: {
-      openaiKey:     getSetting('api_key_openai')     ?? '',
-      anthropicKey:  getSetting('api_key_anthropic')  ?? '',
-      geminiKey:     getSetting('api_key_gemini')     ?? '',
-      groqKey:       getSetting('api_key_groq')       ?? '',
-      openrouterKey: getSetting('api_key_openrouter') ?? '',
-      deepseekKey:   getSetting('api_key_deepseek')   ?? '',
-      moonshotKey:   getSetting('api_key_moonshot')   ?? '',
-      qwenKey:       getSetting('api_key_qwen')       ?? '',
-      mistralKey:    getSetting('api_key_mistral')    ?? '',
-      xaiKey:        getSetting('api_key_xai')        ?? '',
-      cerebrasKey:   getSetting('api_key_cerebras')   ?? '',
-      fireworksKey:  getSetting('api_key_fireworks')  ?? ''
+      openaiKey:     getSetting('api_key_openai')     ?? process.env.OPENAI_API_KEY     ?? '',
+      anthropicKey:  getSetting('api_key_anthropic')  ?? process.env.ANTHROPIC_API_KEY  ?? '',
+      geminiKey:     getSetting('api_key_gemini')     ?? process.env.GEMINI_API_KEY     ?? '',
+      groqKey:       getSetting('api_key_groq')       ?? process.env.GROQ_API_KEY       ?? '',
+      openrouterKey: getSetting('api_key_openrouter') ?? process.env.OPENROUTER_API_KEY ?? '',
+      deepseekKey:   getSetting('api_key_deepseek')   ?? process.env.DEEPSEEK_API_KEY   ?? '',
+      moonshotKey:   getSetting('api_key_moonshot')   ?? process.env.MOONSHOT_API_KEY   ?? '',
+      qwenKey:       getSetting('api_key_qwen')       ?? process.env.QWEN_API_KEY       ?? '',
+      mistralKey:    getSetting('api_key_mistral')    ?? process.env.MISTRAL_API_KEY    ?? '',
+      xaiKey:        getSetting('api_key_xai')        ?? process.env.XAI_API_KEY        ?? '',
+      cerebrasKey:   getSetting('api_key_cerebras')   ?? process.env.CEREBRAS_API_KEY   ?? '',
+      fireworksKey:  getSetting('api_key_fireworks')  ?? process.env.FIREWORKS_API_KEY  ?? '',
+      tavilyKey:     getSetting('api_key_tavily')     ?? process.env.TAVILY_API_KEY     ?? ''
     },
     customEndpoint: {
       endpointUrl: getSetting('custom_endpoint_url') ?? DEFAULT_ENDPOINT_URL,

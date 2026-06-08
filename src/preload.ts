@@ -49,13 +49,14 @@ export interface Api {
   llm: {
     stream: (chatId: string, userMessage: string, model: string) => void
     streamGoal: (chatId: string, userMessage: string, model: string, maxIterations?: number) => void
-    cancel: () => void
-    onToken: (callback: (token: string) => void) => void
-    onDone: (callback: () => void) => void
-    onError: (callback: (message: string) => void) => void
+    cancel: (chatId: string) => void
+    onToken: (callback: (chatId: string, token: string) => void) => void
+    onDone: (callback: (chatId: string) => void) => void
+    onError: (callback: (chatId: string, message: string) => void) => void
     onMessageCreated: (callback: (message: Message) => void) => void
     onChatUpdated: (callback: (chat: Chat) => void) => void
-    onGoalIteration: (callback: (iteration: { current: number; max: number }) => void) => void
+    onGoalIteration: (callback: (chatId: string, iteration: { current: number; max: number }) => void) => void
+    onStatus: (callback: (chatId: string, status: string) => void) => void
     removeStreamListeners: () => void
   }
   settings: {
@@ -102,15 +103,15 @@ const api: Api = {
     streamGoal: (chatId, userMessage, model, maxIterations = 10) => {
       ipcRenderer.send('llm:stream-goal', chatId, userMessage, model, maxIterations)
     },
-    cancel: () => ipcRenderer.send('llm:cancel'),
+    cancel: (chatId) => ipcRenderer.send('llm:cancel', chatId),
     onToken: (callback) => {
-      ipcRenderer.on('llm:token', (_event, token: string) => callback(token))
+      ipcRenderer.on('llm:token', (_event, chatId: string, token: string) => callback(chatId, token))
     },
     onDone: (callback) => {
-      ipcRenderer.on('llm:done', () => callback())
+      ipcRenderer.on('llm:done', (_event, chatId: string) => callback(chatId))
     },
     onError: (callback) => {
-      ipcRenderer.on('llm:error', (_event, message: string) => callback(message))
+      ipcRenderer.on('llm:error', (_event, chatId: string, message: string) => callback(chatId, message))
     },
     onMessageCreated: (callback) => {
       ipcRenderer.on('messages:created', (_event, message: Message) => callback(message))
@@ -119,7 +120,10 @@ const api: Api = {
       ipcRenderer.on('chats:updated', (_event, chat: Chat) => callback(chat))
     },
     onGoalIteration: (callback) => {
-      ipcRenderer.on('llm:goal-iteration', (_event, iteration) => callback(iteration))
+      ipcRenderer.on('llm:goal-iteration', (_event, chatId: string, iteration) => callback(chatId, iteration))
+    },
+    onStatus: (callback) => {
+      ipcRenderer.on('llm:status', (_event, chatId: string, status: string) => callback(chatId, status))
     },
     removeStreamListeners: () => {
       ipcRenderer.removeAllListeners('llm:token')
@@ -128,6 +132,7 @@ const api: Api = {
       ipcRenderer.removeAllListeners('messages:created')
       ipcRenderer.removeAllListeners('chats:updated')
       ipcRenderer.removeAllListeners('llm:goal-iteration')
+      ipcRenderer.removeAllListeners('llm:status')
     }
   },
   settings: {

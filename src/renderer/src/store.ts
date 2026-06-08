@@ -13,8 +13,7 @@ interface AppState {
   chats: Chat[]
   activeChat: Chat | null
   messages: Message[]
-  isStreaming: boolean
-  goalIteration: { current: number; max: number } | null
+  activeStreams: Record<string, { content: string, status: string | null, goalIteration: { current: number; max: number } | null, isStreaming: boolean }>
   connectionMode: ConnectionMode
   directConfig: DirectConfig
   customEndpointConfig: CustomEndpointConfig
@@ -35,10 +34,10 @@ interface AppState {
   removeChat: (id: string) => void
   setMessages: (messages: Message[]) => void
   addMessage: (message: Message) => void
-  appendToken: (token: string) => void
-  replaceStreamingMessage: (message: Message) => void
-  setStreaming: (streaming: boolean) => void
-  setGoalIteration: (iteration: { current: number; max: number } | null) => void
+  appendToken: (chatId: string, token: string) => void
+  setStreaming: (chatId: string, streaming: boolean) => void
+  setLlmStatus: (chatId: string, status: string | null) => void
+  setGoalIteration: (chatId: string, iteration: { current: number; max: number } | null) => void
   setConnectionMode: (mode: ConnectionMode) => void
   setDirectConfig: (config: DirectConfig) => void
   setCustomEndpointConfig: (config: CustomEndpointConfig) => void
@@ -54,8 +53,7 @@ export const useAppStore = create<AppState>((set) => ({
   chats: [],
   activeChat: null,
   messages: [],
-  isStreaming: false,
-  goalIteration: null,
+  activeStreams: {},
   connectionMode: 'direct',
   directConfig: EMPTY_DIRECT_CONFIG,
   customEndpointConfig: EMPTY_CUSTOM_ENDPOINT_CONFIG,
@@ -86,42 +84,39 @@ export const useAppStore = create<AppState>((set) => ({
       activeChat: state.activeChat?.id === id ? null : state.activeChat
     })),
   setMessages: (messages) => set({ messages }),
-  addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
-  appendToken: (token) =>
+  addMessage: (message) =>
     set((state) => {
-      const messages = [...state.messages]
-      const lastAssistantIndex = findLastAssistantIndex(messages)
-
-      if (lastAssistantIndex === -1 || !messages[lastAssistantIndex].isStreaming) {
-        return {
-          messages: [
-            ...messages,
-            {
-              id: `streaming-${Date.now()}`,
-              chat_id: state.activeChat?.id ?? '',
-              role: 'assistant',
-              content: token,
-              created_at: Date.now(),
-              isStreaming: true
-            }
-          ]
-        }
+      if (state.activeChat?.id === message.chat_id) {
+        return { messages: [...state.messages, message] }
       }
-
-      const lastAssistant = messages[lastAssistantIndex]
-      messages[lastAssistantIndex] = { ...lastAssistant, content: lastAssistant.content + token }
-      return { messages }
+      return state
     }),
-  replaceStreamingMessage: (message) =>
+  appendToken: (chatId, token) =>
     set((state) => {
-      const streamingIndex = state.messages.findIndex((item) => item.isStreaming)
-      if (streamingIndex === -1) return { messages: [...state.messages, message] }
+      const stream = state.activeStreams[chatId] || { content: '', status: null, goalIteration: null, isStreaming: true }
       return {
-        messages: state.messages.map((item, index) => (index === streamingIndex ? message : item))
+        activeStreams: { ...state.activeStreams, [chatId]: { ...stream, content: stream.content + token, isStreaming: true } }
       }
     }),
-  setStreaming: (streaming) => set({ isStreaming: streaming }),
-  setGoalIteration: (iteration) => set({ goalIteration: iteration }),
+  setStreaming: (chatId, streaming) =>
+    set((state) => {
+      if (!streaming) {
+        const { [chatId]: _, ...rest } = state.activeStreams
+        return { activeStreams: rest }
+      }
+      const stream = state.activeStreams[chatId] || { content: '', status: null, goalIteration: null, isStreaming: true }
+      return { activeStreams: { ...state.activeStreams, [chatId]: { ...stream, isStreaming: streaming } } }
+    }),
+  setLlmStatus: (chatId, status) =>
+    set((state) => {
+      if (!state.activeStreams[chatId]) return state
+      return { activeStreams: { ...state.activeStreams, [chatId]: { ...state.activeStreams[chatId], status } } }
+    }),
+  setGoalIteration: (chatId, iteration) =>
+    set((state) => {
+      if (!state.activeStreams[chatId]) return state
+      return { activeStreams: { ...state.activeStreams, [chatId]: { ...state.activeStreams[chatId], goalIteration: iteration } } }
+    }),
   setConnectionMode: (mode) => set({ connectionMode: mode }),
   setDirectConfig: (config) => set({ directConfig: config }),
   setCustomEndpointConfig: (config) => set({ customEndpointConfig: config }),
@@ -134,10 +129,5 @@ export const useAppStore = create<AppState>((set) => ({
   setDirectModelsLoading: (provider, v) =>
     set((state) => ({ directModelsLoading: { ...state.directModelsLoading, [provider]: v } }))
 }))
-function findLastAssistantIndex(messages: Message[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'assistant') return index
-  }
-  return -1
-}
+
 

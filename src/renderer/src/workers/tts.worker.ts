@@ -2,8 +2,8 @@
 import { KokoroTTS } from 'kokoro-js'
 import { env } from '@huggingface/transformers'
 
-env.backends.onnx.wasm.numThreads = 2
-env.backends.onnx.wasm.wasmPaths = '/wasm/'
+env.backends.onnx.wasm!.numThreads = 2
+env.backends.onnx.wasm!.wasmPaths = '/wasm/'
 env.useFS = false
 env.allowRemoteModels = false
 env.allowLocalModels = true

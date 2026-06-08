@@ -40,6 +40,9 @@ Most AI chat apps lock you into a single provider. Prism doesn't. Add API keys f
 | **Conversational Mode** | Seamless voice chats with real-time audio transcription powered by local `nodejs-whisper` (or optionally accelerated via Groq API) |
 | **Local Text-to-Speech** | Fully offline, multi-threaded TTS streaming via `kokoro-js` and ONNX WASM — zero cloud latency |
 | **Cross-chat Memory** | Automatically extracts and remembers user preferences across all conversations |
+| **Web Search** | Autonomous tool use via Tavily API to fetch real-time information from the web |
+| **Goal Mode** | Autonomous multi-step goal execution. Type `/goal <iterations> <query>` to let the AI iteratively work through complex problems |
+| **Multi-Chat Streaming** | Run multiple complex generations concurrently across different chats without bleeding state |
 | **Custom endpoints** | Any OpenAI-compatible server — Ollama, LM Studio, vLLM, Jan.ai, LiteLLM, Azure |
 | **Live model discovery** | Fetches available models directly from provider APIs and `/v1/models` |
 | **Persistent history** | All chats stored locally in SQLite — no cloud, no sync, no telemetry |
@@ -320,6 +323,9 @@ Planned features for upcoming releases:
 
 - [x] Cross-chat memory (Autonomous background extraction)
 - [x] Native Voice Mode (Local TTS & Speech-to-Text)
+- [x] Web Search Tool Integration (via Tavily)
+- [x] Goal Mode (Autonomous iterations)
+- [x] Concurrent Multi-Chat Streaming
 - [ ] System prompt presets (save and reuse custom system prompts)
 - [ ] Image and file attachments for vision models
 - [ ] Export chats as Markdown or JSON

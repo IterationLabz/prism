@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
 import OpenAI from 'openai'
 import type { AppConfig, DirectConfig } from '../shared/config'
 import { createMemory, updateChatSummary, type Chat, type Message } from './db'
@@ -7,6 +7,70 @@ import { createMemory, updateChatSummary, type Chat, type Message } from './db'
 export interface CompletionMessage {
   role: string
   content: string
+}
+
+const SEARCH_TOOL_DEF = {
+  type: 'function' as const,
+  function: {
+    name: 'search_web',
+    description: 'Searches the internet using DuckDuckGo to get real-time information or look up facts. Use this whenever the user asks about current events, recent news, or facts you might not know. Only pass a concise search query.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query to run on DuckDuckGo (e.g., "latest news today" or "who won the super bowl 2024")'
+        }
+      },
+      required: ['query']
+    }
+  }
+}
+
+async function performWebSearch(query: string, tavilyKey?: string): Promise<string> {
+  if (tavilyKey && tavilyKey.trim()) {
+    try {
+      const response = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: tavilyKey.trim(),
+          query: query,
+          search_depth: 'basic',
+          include_answer: false,
+          include_images: false,
+          include_raw_content: false,
+          max_results: 5
+        })
+      })
+      if (!response.ok) throw new Error(`Tavily API error: ${response.status}`)
+      const data = await response.json()
+      const resultText = data.results.map((r: any) => `Title: ${r.title}\nSnippet: ${r.content}\nURL: ${r.url}`).join('\n\n')
+      return `[Web Search Results for '${query}']\n\n${resultText || 'No results found.'}`
+    } catch (err: any) {
+      console.error('Tavily search failed, falling back to DuckDuckGo:', err)
+      // Fall through to DuckDuckGo
+    }
+  }
+
+  try {
+    const { search } = await import('duck-duck-scrape')
+    const searchResults = await search(query)
+    
+    const resultText = searchResults.results
+      .slice(0, 5)
+      .map((r: any) => `Title: ${r.title}\nSnippet: ${r.description}\nURL: ${r.url}`)
+      .join('\n\n')
+      
+    return `[Web Search Results for '${query}']\n\n${resultText || 'No results found.'}`
+  } catch (err: any) {
+    console.error('Web search failed:', err)
+    let errMsg = 'Search failed.'
+    if (err.message && err.message.includes('anomaly')) {
+      errMsg = 'DuckDuckGo rate limit reached. The search was blocked.'
+    }
+    return `[Web Search Results for '${query}']\n\nError: ${errMsg}`
+  }
 }
 
 // ─── Provider types ───────────────────────────────────────────────────────────
@@ -83,19 +147,24 @@ function getApiKeyForProvider(direct: DirectConfig, provider: Provider): string 
 
 // ─── Streaming helpers ────────────────────────────────────────────────────────
 
-let activeAbortController: AbortController | null = null
-export let isCancelled = false
+const activeAbortControllers = new Map<string, AbortController>()
+const cancelledStreams = new Set<string>()
 
-export function cancelStream(): void {
-  isCancelled = true
-  if (activeAbortController) {
-    activeAbortController.abort()
-    activeAbortController = null
+export function cancelStream(chatId: string): void {
+  cancelledStreams.add(chatId)
+  const controller = activeAbortControllers.get(chatId)
+  if (controller) {
+    controller.abort()
+    activeAbortControllers.delete(chatId)
   }
 }
 
-export function resetCancelled(): void {
-  isCancelled = false
+export function resetCancelled(chatId: string): void {
+  cancelledStreams.delete(chatId)
+}
+
+export function isStreamCancelled(chatId: string): boolean {
+  return cancelledStreams.has(chatId)
 }
 
 async function streamOpenAICompatible(
@@ -105,23 +174,78 @@ async function streamOpenAICompatible(
   messages: CompletionMessage[],
   onToken: (t: string) => void,
   onDone: () => void,
-  onError: (e: string) => void
+  onError: (e: string) => void,
+  onToolCallStart?: (name: string, args: string) => void,
+  onSystemMessage?: (content: string) => void,
+  tavilyKey?: string,
+  chatId?: string
 ): Promise<void> {
   try {
     const client = new OpenAI({ baseURL, apiKey })
     const stream = await client.chat.completions.create({
       model,
-      messages: messages.map((msg) => ({
-        role: normalizeOpenAIRole(msg.role),
-        content: msg.content
-      })),
+      messages: messages.map((msg, idx) => {
+        // Convert middle-of-history system messages to user messages to prevent local LLM prompt format crashes
+        const role = msg.role === 'system' && idx > 0 ? 'user' : normalizeOpenAIRole(msg.role)
+        return { role, content: msg.content }
+      }),
+      tools: [SEARCH_TOOL_DEF],
       stream: true
-    }, { signal: activeAbortController?.signal })
+    }, { signal: chatId ? activeAbortControllers.get(chatId)?.signal : undefined })
+    
+    let toolCallName = ''
+    let toolCallArgs = ''
+    let isToolCalling = false
+    let receivedContent = false
+
     for await (const chunk of stream) {
-      if (isCancelled) break
-      const token = chunk.choices[0]?.delta?.content ?? ''
-      if (token) onToken(token)
+      if (chatId && cancelledStreams.has(chatId)) break
+      
+      const delta = chunk.choices?.[0]?.delta
+      
+      if (delta?.tool_calls?.length) {
+        isToolCalling = true
+        const tc = delta.tool_calls[0]
+        if (tc.function?.name) toolCallName += tc.function.name
+        if (tc.function?.arguments) toolCallArgs += tc.function.arguments
+      }
+      
+      const token = delta?.content ?? ''
+      if (token) {
+        receivedContent = true
+        onToken(token)
+      }
     }
+
+    if (isToolCalling) {
+      if (toolCallName === 'search_web' && toolCallArgs) {
+        try {
+          const args = JSON.parse(toolCallArgs)
+          const query = args.query || args.search || args.q || Object.values(args)[0]
+          if (query && typeof query === 'string') {
+            if (onToolCallStart) onToolCallStart('search_web', query)
+            const sysMsg = await performWebSearch(query, tavilyKey)
+            if (onSystemMessage) onSystemMessage(sysMsg)
+            
+            // Push alternating assistant and user messages to maintain strict prompt formats for local models
+            messages.push({ role: 'assistant', content: `*(Searching the web for: "${query}")*` })
+            messages.push({ role: 'user', content: `[Web Search Results]\n\n${sysMsg}\n\nPlease use this information to continue.` })
+            
+            await streamOpenAICompatible(baseURL, apiKey, model, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
+            return
+          } else {
+            onToken('\n*(Search failed: invalid query from model)*\n')
+          }
+        } catch (err) {
+          onToken('\n*(Search failed: unable to parse arguments)*\n')
+        }
+      } else {
+        onToken(`\n*(Model attempted to call an unknown tool: ${toolCallName})*\n`)
+      }
+    } else if (!receivedContent) {
+      onToken('\n*(Model returned an empty response. This might be due to context length limits or proxy issues.)*\n')
+    }
+
     onDone()
   } catch (err: any) {
     onError(err.message ?? 'Stream failed')
@@ -132,7 +256,13 @@ async function streamAnthropic(
   model: string,
   apiKey: string,
   messages: CompletionMessage[],
-  onToken: (token: string) => void
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+  onToolCallStart?: (name: string, args: string) => void,
+  onSystemMessage?: (content: string) => void,
+  tavilyKey?: string,
+  chatId?: string
 ): Promise<void> {
   const client = new Anthropic({ apiKey })
   const { system, conversation } = toAnthropicMessages(messages)
@@ -140,13 +270,62 @@ async function streamAnthropic(
     model,
     max_tokens: 4096,
     system: system || undefined,
-    messages: conversation
-  }, { signal: activeAbortController?.signal })
+    messages: conversation,
+    tools: [
+      {
+        name: 'search_web',
+        description: 'Searches the internet using DuckDuckGo to get real-time information or look up facts. Use this whenever the user asks about current events, recent news, or facts you might not know. Only pass a concise search query.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'The search query to run on DuckDuckGo'
+            }
+          },
+          required: ['query']
+        }
+      }
+    ]
+  }, { signal: chatId ? activeAbortControllers.get(chatId)?.signal : undefined })
+
+  let toolCallName = ''
+  let toolCallArgs = ''
+  let isToolCalling = false
 
   for await (const event of stream) {
-    if (isCancelled) break
+    if (chatId && cancelledStreams.has(chatId)) break
+    if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
+      isToolCalling = true
+      toolCallName = event.content_block.name
+    }
+    if (event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {
+      toolCallArgs += event.delta.partial_json
+    }
     if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
       onToken(event.delta.text)
+    }
+  }
+
+  if (isToolCalling && toolCallName === 'search_web' && toolCallArgs) {
+    try {
+      const args = JSON.parse(toolCallArgs)
+      const query = args.query || args.search || args.q || Object.values(args)[0]
+      if (query && typeof query === 'string') {
+        if (onToolCallStart) onToolCallStart('search_web', query)
+        const sysMsg = await performWebSearch(query, tavilyKey)
+        if (onSystemMessage) onSystemMessage(sysMsg)
+        
+        messages.push({ role: 'assistant', content: `*(Searching the web for: "${query}")*` })
+        messages.push({ role: 'user', content: `[Web Search Results]\n\n${sysMsg}\n\nPlease use this information to continue.` })
+        
+        await streamAnthropic(model, apiKey, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
+        return
+      } else {
+        onToken('\n*(Search failed: invalid query from model)*\n')
+      }
+    } catch (err) {
+      onToken('\n*(Search failed: unable to parse arguments)*\n')
     }
   }
 }
@@ -155,23 +334,79 @@ async function streamGemini(
   model: string,
   apiKey: string,
   messages: CompletionMessage[],
-  onToken: (token: string) => void
+  onToken: (token: string) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+  onToolCallStart?: (name: string, args: string) => void,
+  onSystemMessage?: (content: string) => void,
+  tavilyKey?: string,
+  chatId?: string
 ): Promise<void> {
   const client = new GoogleGenerativeAI(apiKey)
   const { systemInstruction, contents } = toGeminiContents(messages)
-  const generativeModel = client.getGenerativeModel({ model, systemInstruction: systemInstruction || undefined })
-  const result = await generativeModel.generateContentStream({ contents }, { signal: activeAbortController?.signal })
+  const generativeModel = client.getGenerativeModel({ 
+    model, 
+    systemInstruction: systemInstruction || undefined,
+    tools: [{
+      functionDeclarations: [{
+        name: 'search_web',
+        description: 'Searches the internet using DuckDuckGo to get real-time information or look up facts. Use this whenever the user asks about current events, recent news, or facts you might not know. Only pass a concise search query.',
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            query: {
+              type: SchemaType.STRING,
+              description: 'The search query to run on DuckDuckGo'
+            }
+          },
+          required: ['query']
+        }
+      }]
+    }]
+  })
+  const result = await generativeModel.generateContentStream({ contents }, { signal: chatId ? activeAbortControllers.get(chatId)?.signal : undefined })
 
-  // The Gemini SDK often hangs while tearing down gRPC connections on abort.
-  // We use an async iterator wrapper to bail out immediately if cancelled.
+  let isToolCalling = false
+  let toolCallName = ''
+  let toolCallArgs: any = null
+
   try {
     for await (const chunk of result.stream) {
-      if (isCancelled) break
-      const token = chunk.text()
-      if (token) onToken(token)
+      if (chatId && cancelledStreams.has(chatId)) break
+      
+      const calls = chunk.functionCalls()
+      if (calls && calls.length > 0) {
+        isToolCalling = true
+        toolCallName = calls[0].name
+        toolCallArgs = calls[0].args
+      }
+      
+      try {
+        const token = chunk.text()
+        if (token) onToken(token)
+      } catch (e) {
+        // chunk.text() throws if there is no text part
+      }
+    }
+    
+    if (isToolCalling && toolCallName === 'search_web' && toolCallArgs) {
+      const query = toolCallArgs.query || toolCallArgs.search || toolCallArgs.q || Object.values(toolCallArgs)[0]
+      if (query && typeof query === 'string') {
+        if (onToolCallStart) onToolCallStart('search_web', query)
+        const sysMsg = await performWebSearch(query, tavilyKey)
+        if (onSystemMessage) onSystemMessage(sysMsg)
+        
+        messages.push({ role: 'assistant', content: `*(Searching the web for: "${query}")*` })
+        messages.push({ role: 'user', content: `[Web Search Results]\n\n${sysMsg}\n\nPlease use this information to continue.` })
+        
+        await streamGemini(model, apiKey, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
+        return
+      } else {
+        onToken('\n*(Search failed: invalid query from model)*\n')
+      }
     }
   } catch (err: any) {
-    if (err.name !== 'AbortError' && !isCancelled) throw err
+    if (err.name !== 'AbortError' && (!chatId || !cancelledStreams.has(chatId))) throw err
   }
 }
 
@@ -183,7 +418,11 @@ async function streamViaDirect(
   messages: CompletionMessage[],
   onToken: (token: string) => void,
   onDone: () => void,
-  onError: (err: string) => void
+  onError: (err: string) => void,
+  onToolCallStart?: (name: string, args: string) => void,
+  onSystemMessage?: (content: string) => void,
+  tavilyKey?: string,
+  chatId?: string
 ): Promise<void> {
   try {
     const provider = detectProvider(model)
@@ -195,14 +434,14 @@ async function streamViaDirect(
     }
 
     if (provider === 'anthropic') {
-      await streamAnthropic(model, apiKey, messages, onToken)
+      await streamAnthropic(model, apiKey, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
       onDone()
     } else if (provider === 'gemini') {
-      await streamGemini(model, apiKey, messages, onToken)
+      await streamGemini(model, apiKey, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
       onDone()
     } else {
       const { baseURL } = PROVIDER_CONFIG[provider]
-      await streamOpenAICompatible(baseURL, apiKey, model, messages, onToken, onDone, onError)
+      await streamOpenAICompatible(baseURL, apiKey, model, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
     }
   } catch (error) {
     onError(errorToMessage(error))
@@ -216,13 +455,17 @@ async function streamViaCustomEndpoint(
   messages: CompletionMessage[],
   onToken: (token: string) => void,
   onDone: () => void,
-  onError: (err: string) => void
+  onError: (err: string) => void,
+  onToolCallStart?: (name: string, args: string) => void,
+  onSystemMessage?: (content: string) => void,
+  tavilyKey?: string,
+  chatId?: string
 ): Promise<void> {
   // Normalize URL — ensure it ends with /v1
   let base = endpointUrl.trim().replace(/\/$/, '')
   if (!base.endsWith('/v1')) base = `${base}/v1`
 
-  await streamOpenAICompatible(base, apiKey || 'dummy-key', model, messages, onToken, onDone, onError)
+  await streamOpenAICompatible(base, apiKey || 'dummy-key', model, messages, onToken, onDone, onError, onToolCallStart, onSystemMessage, tavilyKey, chatId)
 }
 
 export async function streamCompletion(
@@ -231,10 +474,15 @@ export async function streamCompletion(
   messages: CompletionMessage[],
   onToken: (token: string) => void,
   onDone: () => void,
-  onError: (err: string) => void
+  onError: (err: string) => void,
+  onToolCallStart?: (name: string, args: string) => void,
+  onSystemMessage?: (content: string) => void,
+  chatId?: string
 ): Promise<void> {
-  isCancelled = false
-  activeAbortController = new AbortController()
+  if (chatId) {
+    resetCancelled(chatId)
+    activeAbortControllers.set(chatId, new AbortController())
+  }
 
   try {
     if (config.mode === 'custom') {
@@ -245,10 +493,25 @@ export async function streamCompletion(
         messages,
         onToken,
         onDone,
-        onError
+        onError,
+        onToolCallStart,
+        onSystemMessage,
+        config.direct.tavilyKey,
+        chatId
       )
     } else {
-      await streamViaDirect(config.direct, model, messages, onToken, onDone, onError)
+      await streamViaDirect(
+        config.direct,
+        model,
+        messages,
+        onToken,
+        onDone,
+        onError,
+        onToolCallStart,
+        onSystemMessage,
+        config.direct.tavilyKey,
+        chatId
+      )
     }
   } catch (error: any) {
     if (error?.name !== 'AbortError') {
@@ -257,7 +520,7 @@ export async function streamCompletion(
       onDone()
     }
   } finally {
-    activeAbortController = null
+    if (chatId) activeAbortControllers.delete(chatId)
   }
 }
 

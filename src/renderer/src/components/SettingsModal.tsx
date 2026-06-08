@@ -75,6 +75,13 @@ const PROVIDER_GROUPS: ProviderGroup[] = [
     fields: [
       { key: 'openrouterKey',setting: 'api_key_openrouter',label: 'OpenRouter',     placeholder: 'sk-or-...',   docsUrl: 'https://openrouter.ai/keys' }
     ]
+  },
+  {
+    title: 'Search Providers',
+    defaultOpen: true,
+    fields: [
+      { key: 'tavilyKey',    setting: 'api_key_tavily',    label: 'Tavily (Web Search)', placeholder: 'tvly-...',    docsUrl: 'https://tavily.com/' }
+    ]
   }
 ]
 
@@ -618,7 +625,7 @@ export function SettingsModal({ initialTab = 'connection', onClose }: SettingsMo
             <div className="settings-section about-section">
               <h3>About</h3>
               <p className="about-name">Prism</p>
-              <p className="muted">Version 2.0.9</p>
+              <p className="muted">Version 2.1.0</p>
               <p className="about-copy">
                 Every model. One interface.
               </p>

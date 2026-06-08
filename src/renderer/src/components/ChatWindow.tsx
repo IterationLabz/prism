@@ -1,21 +1,42 @@
 import { ArrowUp, Loader, Mic, MicOff, Radio, Square } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useTTS } from '../hooks/useTTS'
 import type { Chat, Message } from '../types'
+import { useAppStore } from '../store'
 
 interface ChatWindowProps {
   chat: Chat | null
   messages: Message[]
-  isStreaming: boolean
-  goalIteration: { current: number; max: number } | null
   onSend: (content: string) => void
 }
 
 const SUGGESTIONS = ['Explain something complex', 'Help me write or edit', 'Think through a problem', 'Write some code']
+export function ChatWindow({ chat, messages, onSend }: ChatWindowProps) {
+  const { activeStreams } = useAppStore()
+  const activeStream = chat ? activeStreams[chat.id] : undefined
+  const isStreaming = Boolean(activeStream?.isStreaming)
+  const llmStatus = activeStream?.status ?? null
+  const goalIteration = activeStream?.goalIteration ?? null
 
-export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend }: ChatWindowProps) {
+  const displayMessages = useMemo(() => {
+    if (activeStream?.isStreaming) {
+      return [
+        ...messages,
+        {
+          id: `streaming-${chat?.id}`,
+          chat_id: chat?.id ?? '',
+          role: 'assistant' as const,
+          content: activeStream.content,
+          created_at: Date.now(),
+          isStreaming: true
+        }
+      ]
+    }
+    return messages
+  }, [messages, activeStream, chat?.id])
+
   const [draft, setDraft] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
@@ -102,16 +123,17 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
 
   // ── Scroll & Draft Management ────────────────────────────────────────────────
   useEffect(() => {
-    if (!messages.length) return
-    const lastMsg = messages[messages.length - 1]
+    if (!displayMessages.length) return
+    const lastMsg = displayMessages[displayMessages.length - 1]
     if (!lastMsg || lastMsg.role !== 'assistant') return
 
     console.log('[EFFECT] streaming effect firing, content length:', lastMsg.content.length)
 
     // Reset tracking if this is a genuinely new message.
     // We check against the index slot, not ID, because ID changes mid-stream
+    // We check against the index slot, not ID, because ID changes mid-stream
     // from 'streaming-X' to the SQLite persisted ID.
-    const idx = messages.length - 1
+    const idx = displayMessages.length - 1
     if (idx !== currentMsgSlotRef.current) {
       currentMsgSlotRef.current = idx
       processedLengthRef.current = 0
@@ -329,7 +351,7 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
 
   useEffect(() => {
     // Force scroll to bottom if a brand new message is added
-    if (messages.length > lastMessageCountRef.current) {
+    if (displayMessages.length > lastMessageCountRef.current) {
       setIsAutoScrollPaused(false)
       requestAnimationFrame(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -337,8 +359,8 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
     } else if (!isAutoScrollPaused) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-    lastMessageCountRef.current = messages.length
-  }, [messages, isAutoScrollPaused])
+    lastMessageCountRef.current = displayMessages.length
+  }, [displayMessages, isAutoScrollPaused])
 
   const resetTextarea = (): void => {
     const textarea = textareaRef.current
@@ -370,7 +392,7 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
     if (isStreaming) return (
       <span className="voice-status">
         <span className="voice-status-dot thinking" />
-        Thinking...
+        {llmStatus ? llmStatus : 'Thinking...'}
       </span>
     )
     if (voice.isTranscribing) return (
@@ -412,7 +434,7 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
               </div>
             </div>
           ) : (
-            messages.map((message) => (
+            displayMessages.map((message) => (
               <MessageBubble 
                 key={message.id} 
                 message={message} 
@@ -422,11 +444,14 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
               />
             ))
           )}
-          {isStreaming && !messages.some((message) => message.isStreaming) && (
+          {isStreaming && !displayMessages.some((message) => message.isStreaming) && (
             <div className="flex gap-2 p-2 bg-base-800/50 rounded-lg w-fit ml-4 mt-2 items-center">
               <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
               <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse delay-75" />
               <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse delay-150" />
+              {llmStatus && (
+                <span className="text-xs text-primary-400 ml-2 animate-pulse">{llmStatus}</span>
+              )}
             </div>
           )}
           <div ref={messagesEndRef} className="h-6 shrink-0" />
@@ -514,7 +539,7 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
                         tts.initAudio()
                         voice.startListening()
                       } else {
-                        window.api.llm.cancel()
+                        if (chat) window.api.llm.cancel(chat.id)
                         voice.stopListening()
                         tts.stop()
                       }
@@ -540,7 +565,7 @@ export function ChatWindow({ chat, messages, isStreaming, goalIteration, onSend 
               {!isConversationalMode && (
                 isStreaming ? (
                   <button type="button" onClick={() => {
-                    window.api.llm.cancel()
+                    if (chat) window.api.llm.cancel(chat.id)
                     tts.stop()
                   }} aria-label="Stop generating">
                     <Square size={14} fill="currentColor" />

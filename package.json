@@ -1,7 +1,7 @@
 {
   "name": "prism",
   "productName": "Prism",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "description": "Every model. One interface. — A cross-platform AI desktop chat client for any provider.",
   "main": "./out/main/index.js",
   "author": {
@@ -33,6 +33,7 @@
     "@google/generative-ai": "latest",
     "@mintplex-labs/piper-tts-web": "^1.0.4",
     "better-sqlite3": "latest",
+    "duck-duck-scrape": "^2.2.7",
     "highlight.js": "latest",
     "kokoro-js": "^1.2.1",
     "lucide-react": "latest",
@@ -42,6 +43,7 @@
     "react-dom": "latest",
     "react-markdown": "latest",
     "rehype-highlight": "latest",
+    "remark-breaks": "^4.0.0",
     "zustand": "latest"
   },
   "devDependencies": {
@@ -69,7 +71,9 @@
     },
     "asarUnpack": [
       "out/renderer/**/*.wasm",
-      "out/renderer/**/*.mjs"
+      "out/renderer/**/*.mjs",
+      "out/renderer/**/*.onnx",
+      "out/renderer/**/*.bin"
     ],
     "files": [
       "out/**/*",

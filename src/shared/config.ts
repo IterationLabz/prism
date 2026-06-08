@@ -13,6 +13,7 @@ export interface DirectConfig {
   xaiKey: string
   cerebrasKey: string
   fireworksKey: string
+  tavilyKey: string
 }
 
 export interface CustomEndpointConfig {
@@ -42,7 +43,8 @@ export const EMPTY_DIRECT_CONFIG: DirectConfig = {
   mistralKey: '',
   xaiKey: '',
   cerebrasKey: '',
-  fireworksKey: ''
+  fireworksKey: '',
+  tavilyKey: ''
 }
 
 export const EMPTY_CUSTOM_ENDPOINT_CONFIG: CustomEndpointConfig = {
