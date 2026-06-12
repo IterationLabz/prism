@@ -1,6 +1,7 @@
 import { ChevronDown, RefreshCw, Download } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../store'
+import { useToast } from './Toast'
 import type { Chat, DirectConfig, Provider } from '../types'
 
 // ─── Direct API grouped model list ────────────────────────────────────────────
@@ -226,6 +227,8 @@ export function TopBar({ chat, onTitleChange, onMetaChange, onFolderChange }: To
     setDirectModelsLoading,
   } = useAppStore()
 
+  const { showToast } = useToast()
+
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(chat?.title ?? 'New Chat')
   const [editingFolder, setEditingFolder] = useState(false)
@@ -387,6 +390,15 @@ export function TopBar({ chat, onTitleChange, onMetaChange, onFolderChange }: To
   const isNoDirectKeys = connectionMode === 'direct' && activeGroups.length === 0
   const isCustomFetchFailed =
     connectionMode === 'custom' && !modelsLoading && (modelsError || availableModels.length === 0)
+
+  // ── Export ───────────────────────────────────────────────────────────────
+  const handleExport = async (format: 'markdown' | 'json') => {
+    if (!chat || !window.api) return
+    const result = await window.api.export.chat(chat.id, format)
+    if (!result.success && result.error) {
+      showToast(`Export failed: ${result.error}`)
+    }
+  }
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -596,7 +608,7 @@ export function TopBar({ chat, onTitleChange, onMetaChange, onFolderChange }: To
             className="topbar-refresh-btn"
             title="Export Chat as Markdown"
             aria-label="Export Chat"
-            onClick={() => window.api?.export.chat(chat.id, 'markdown')}
+            onClick={() => void handleExport('markdown')}
             style={{ marginLeft: '12px' }}
           >
             <Download size={13} />

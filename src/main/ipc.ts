@@ -509,7 +509,11 @@ export function registerIpcHandlers(): void {
       }
 
       const safeTitle = chat.title.replace(/[<>:"\/\\|?*]/g, '_').slice(0, 100)
-      const result = await dialog.showSaveDialog({
+      
+      const win = BrowserWindow.fromWebContents(_.sender)
+      if (!win) return { success: false, error: 'No focused window found' }
+
+      const result = await dialog.showSaveDialog(win, {
         title: 'Export Chat',
         defaultPath: `${safeTitle}.${defaultExt}`,
         filters: [{ name: filterName, extensions: [defaultExt] }]
