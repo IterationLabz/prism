@@ -16,6 +16,7 @@ export interface Chat {
   updated_at: number
   context_summary?: string
   summary_through_id?: string
+  folder?: string
 }
 
 export interface Memory {
@@ -92,6 +93,12 @@ export function createTables(database = getDb()): void {
   
   try {
     database.exec('ALTER TABLE chats ADD COLUMN summary_through_id TEXT;')
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  try {
+    database.exec('ALTER TABLE chats ADD COLUMN folder TEXT;')
   } catch (e) {
     // Column already exists, ignore
   }
@@ -220,6 +227,17 @@ export function createMemory(content: string): Memory {
 
 export function deleteMemory(id: string): void {
   getDb().prepare('DELETE FROM memories WHERE id = ?').run(id)
+}
+
+export function updateChatFolder(id: string, folder: string | null): Chat | null {
+  const now = Date.now()
+  getDb().prepare('UPDATE chats SET folder = ?, updated_at = ? WHERE id = ?').run(folder, now, id)
+  return getChat(id)
+}
+
+export function getAllFolders(): string[] {
+  const rows = getDb().prepare('SELECT DISTINCT folder FROM chats WHERE folder IS NOT NULL AND folder != \'\'  ORDER BY folder ASC').all() as { folder: string }[]
+  return rows.map(r => r.folder)
 }
 
 export function closeDb(): void {

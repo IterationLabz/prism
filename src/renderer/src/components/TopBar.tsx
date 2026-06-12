@@ -1,4 +1,4 @@
-import { ChevronDown, RefreshCw } from 'lucide-react'
+import { ChevronDown, RefreshCw, Download } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../store'
 import type { Chat, DirectConfig, Provider } from '../types'
@@ -205,9 +205,10 @@ interface TopBarProps {
   chat: Chat | null
   onTitleChange: (title: string) => void
   onMetaChange: (provider: Provider, model: string) => void
+  onFolderChange: (folder: string | null) => void
 }
 
-export function TopBar({ chat, onTitleChange, onMetaChange }: TopBarProps) {
+export function TopBar({ chat, onTitleChange, onMetaChange, onFolderChange }: TopBarProps) {
   const {
     connectionMode,
     directConfig,
@@ -227,6 +228,8 @@ export function TopBar({ chat, onTitleChange, onMetaChange }: TopBarProps) {
 
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(chat?.title ?? 'New Chat')
+  const [editingFolder, setEditingFolder] = useState(false)
+  const [folder, setFolder] = useState(chat?.folder ?? '')
   const [model, setModel] = useState(chat?.model ?? defaultModel)
   const [showCustomInput, setShowCustomInput] = useState(false)
   const [customModelInput, setCustomModelInput] = useState('')
@@ -274,11 +277,12 @@ export function TopBar({ chat, onTitleChange, onMetaChange }: TopBarProps) {
     [activeGroups, directModelsLoading]
   )
 
-  // Sync title and model when chat changes
+  // Sync title, folder and model when chat changes
   useEffect(() => {
     setTitle(chat?.title ?? 'New Chat')
+    setFolder(chat?.folder ?? '')
     setModel(chat?.model ?? defaultModel)
-  }, [chat?.id, chat?.model, chat?.title, defaultModel])
+  }, [chat?.id, chat?.model, chat?.title, chat?.folder, defaultModel])
 
   // Sync selected provider when model or activeGroups change
   useEffect(() => {
@@ -291,12 +295,20 @@ export function TopBar({ chat, onTitleChange, onMetaChange }: TopBarProps) {
     }
   }, [model, resolvedGroups, connectionMode, activeGroups, selectedProvider])
 
-  // ── Title editing ────────────────────────────────────────────────────────
   const commitTitle = (): void => {
     setEditing(false)
     const cleanTitle = title.trim() || 'New Chat'
     setTitle(cleanTitle)
     if (chat && cleanTitle !== chat.title) onTitleChange(cleanTitle)
+  }
+
+  const commitFolder = (): void => {
+    setEditingFolder(false)
+    const cleanFolder = folder.trim() || null
+    setFolder(cleanFolder ?? '')
+    if (chat && cleanFolder !== chat.folder) {
+      onFolderChange(cleanFolder)
+    }
   }
 
   // ── Model selection ──────────────────────────────────────────────────────
@@ -379,7 +391,33 @@ export function TopBar({ chat, onTitleChange, onMetaChange }: TopBarProps) {
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <header className="top-bar drag-region">
-      <div className="title-area">
+      <div className="title-area flex items-center gap-2">
+        {/* Folder Editor */}
+        {editingFolder ? (
+          <input
+            className="title-input"
+            autoFocus
+            placeholder="Folder name..."
+            value={folder}
+            onBlur={commitFolder}
+            onChange={(event) => setFolder(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') commitFolder()
+              if (event.key === 'Escape') {
+                setFolder(chat?.folder ?? '')
+                setEditingFolder(false)
+              }
+            }}
+          />
+        ) : (
+          <button className="title-button text-muted" type="button" onClick={() => setEditingFolder(true)} disabled={!chat} style={{ opacity: 0.6, fontWeight: 400 }}>
+            {chat?.folder || 'No folder'}
+          </button>
+        )}
+        
+        <span style={{ opacity: 0.3 }}>/</span>
+
+        {/* Title Editor */}
         {editing ? (
           <input
             className="title-input"
@@ -550,6 +588,19 @@ export function TopBar({ chat, onTitleChange, onMetaChange }: TopBarProps) {
               </label>
             )}
           </>
+        )}
+        
+        {chat && (
+          <button
+            type="button"
+            className="topbar-refresh-btn"
+            title="Export Chat as Markdown"
+            aria-label="Export Chat"
+            onClick={() => window.api?.export.chat(chat.id, 'markdown')}
+            style={{ marginLeft: '12px' }}
+          >
+            <Download size={13} />
+          </button>
         )}
       </div>
     </header>

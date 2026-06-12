@@ -125,6 +125,7 @@ export function SettingsModal({ initialTab = 'connection', onClose }: SettingsMo
   const [autoRead, setAutoRead] = useState(false)
   const [ttsVoice, setTtsVoice] = useState('af_heart')
   const [ttsSpeed, setTtsSpeed] = useState(1.0)
+  const [theme, setTheme] = useState('dark')
 
   useEffect(() => {
     if (!window.api) return
@@ -149,6 +150,9 @@ export function SettingsModal({ initialTab = 'connection', onClose }: SettingsMo
       
       const autoReadSaved = await window.api.settings.get('auto_read_responses')
       setAutoRead(autoReadSaved === 'true')
+      
+      const themeSaved = await window.api.settings.get('theme')
+      if (themeSaved) setTheme(themeSaved)
     }
     void load()
   }, [setConnectionMode, setCustomEndpointConfig, setDefaultModel, setDirectConfig])
@@ -294,6 +298,21 @@ export function SettingsModal({ initialTab = 'connection', onClose }: SettingsMo
   const saveTtsSpeed = async (val: number): Promise<void> => {
     setTtsSpeed(val)
     if (window.api) await window.api.settings.set('tts_speed', val.toString())
+  }
+
+  const saveTheme = async (val: string): Promise<void> => {
+    setTheme(val)
+    if (window.api) {
+      await window.api.settings.set('theme', val)
+      if (val === 'light') {
+        document.documentElement.classList.add('light')
+      } else if (val === 'system') {
+        const preferLight = window.matchMedia('(prefers-color-scheme: light)').matches
+        document.documentElement.classList.toggle('light', preferLight)
+      } else {
+        document.documentElement.classList.remove('light')
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -566,6 +585,16 @@ export function SettingsModal({ initialTab = 'connection', onClose }: SettingsMo
 
         {tab === 'preferences' && (
           <div className="settings-body">
+            <div className="settings-section">
+              <h3>Theme</h3>
+              <p className="muted">Choose the visual style of the application.</p>
+              <select value={theme} onChange={(event) => void saveTheme(event.target.value)}>
+                <option value="dark">Dark Mode</option>
+                <option value="light">Light Mode</option>
+                <option value="system">System Default</option>
+              </select>
+            </div>
+
             <div className="settings-section">
               <h3>Default Model</h3>
               <p className="muted">New chats start with this model unless changed in the top bar.</p>

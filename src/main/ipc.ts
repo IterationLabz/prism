@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, shell, app, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell, app, type IpcMainInvokeEvent } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -16,7 +16,9 @@ import {
   getSetting,
   setSetting,
   updateChatMeta,
+  updateChatFolder,
   updateChatTitle,
+  getAllFolders,
   type Chat,
   type Memory,
   type Message,
@@ -68,6 +70,10 @@ export function registerIpcHandlers(): void {
   handle('chats:updateMeta', (_event, chatId: string, meta: { provider: Provider; model: string }) =>
     updateChatMeta(chatId, meta.provider, meta.model)
   )
+
+  handle('chats:updateFolder', (_event, id: string, folder: string | null) => updateChatFolder(id, folder))
+
+  handle('chats:getFolders', () => getAllFolders())
 
   function buildOptimizedHistory(chatId: string, chat: Chat) {
     const fullHistory = getMessages(chatId)
@@ -474,6 +480,47 @@ export function registerIpcHandlers(): void {
       return { success: true }
     } catch (err) {
       return { success: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle('export:chat', async (_, chatId: string, format: 'markdown' | 'json') => {
+    try {
+      const chat = getChat(chatId)
+      if (!chat) return { success: false, error: 'Chat not found' }
+      const msgs = getMessages(chatId)
+
+      let content: string
+      let defaultExt: string
+      let filterName: string
+
+      if (format === 'json') {
+        content = JSON.stringify({ chat, messages: msgs }, null, 2)
+        defaultExt = 'json'
+        filterName = 'JSON'
+      } else {
+        const lines: string[] = [`# ${chat.title}`, ``, `*Exported from Prism on ${new Date().toLocaleDateString()}*`, ``]
+        for (const msg of msgs) {
+          const label = msg.role === 'user' ? '**You**' : msg.role === 'assistant' ? '**Assistant**' : '**System**'
+          lines.push(`### ${label}`, ``, msg.content, ``)
+        }
+        content = lines.join('\n')
+        defaultExt = 'md'
+        filterName = 'Markdown'
+      }
+
+      const safeTitle = chat.title.replace(/[<>:"\/\\|?*]/g, '_').slice(0, 100)
+      const result = await dialog.showSaveDialog({
+        title: 'Export Chat',
+        defaultPath: `${safeTitle}.${defaultExt}`,
+        filters: [{ name: filterName, extensions: [defaultExt] }]
+      })
+
+      if (result.canceled || !result.filePath) return { success: true }
+
+      fs.writeFileSync(result.filePath, content, 'utf-8')
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message ?? 'Export failed' }
     }
   })
 
