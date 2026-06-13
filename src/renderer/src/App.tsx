@@ -147,6 +147,38 @@ export default function App() {
     }
   }, [loadAppData])
 
+  // ── Theme initialisation ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!window.api) return
+
+    const applyTheme = (mode: string) => {
+      if (mode === 'light') {
+        document.documentElement.classList.add('light')
+      } else if (mode === 'system') {
+        const preferLight = window.matchMedia('(prefers-color-scheme: light)').matches
+        document.documentElement.classList.toggle('light', preferLight)
+      } else {
+        document.documentElement.classList.remove('light')
+      }
+    }
+
+    void (async () => {
+      const saved = await window.api!.settings.get('theme') ?? 'dark'
+      applyTheme(saved)
+    })()
+
+    // Listen for OS changes when in system mode
+    const mq = window.matchMedia('(prefers-color-scheme: light)')
+    const handler = () => {
+      void (async () => {
+        const current = await window.api!.settings.get('theme') ?? 'dark'
+        if (current === 'system') applyTheme('system')
+      })()
+    }
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+
   useEffect(() => {
     if (!window.api) return
 
@@ -342,6 +374,15 @@ export default function App() {
     [activeChat, upsertChat]
   )
 
+  const updateFolder = useCallback(
+    async (folder: string | null) => {
+      if (!window.api || !activeChat) return
+      const updated = await window.api.chats.updateFolder(activeChat.id, folder)
+      if (updated) upsertChat(updated)
+    },
+    [activeChat, upsertChat]
+  )
+
   const normalizedActiveChat = useMemo(() => activeChat, [activeChat])
 
   const openSettings = useCallback((tab: SettingsTab = 'connection') => {
@@ -387,7 +428,7 @@ export default function App() {
         onOpenSettings={openSettings}
       />
       <main className="chat-main">
-        <TopBar chat={normalizedActiveChat} onTitleChange={updateTitle} onMetaChange={updateMeta} />
+        <TopBar chat={normalizedActiveChat} onTitleChange={updateTitle} onMetaChange={updateMeta} onFolderChange={updateFolder} />
         <ChatWindow chat={normalizedActiveChat} messages={messages} onSend={sendMessage} />  </main>
       {settingsOpen && <SettingsModal initialTab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>

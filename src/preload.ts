@@ -11,6 +11,7 @@ export interface Chat {
   updated_at: number
   context_summary?: string
   summary_through_id?: string
+  folder?: string
 }
 
 export interface Message {
@@ -37,6 +38,8 @@ export interface Api {
     delete: (id: string) => Promise<void>
     updateTitle: (id: string, title: string) => Promise<Chat | null>
     updateMeta: (id: string, meta: Pick<Chat, 'provider' | 'model'>) => Promise<Chat | null>
+    updateFolder: (id: string, folder: string | null) => Promise<Chat | null>
+    getFolders: () => Promise<string[]>
   }
   messages: {
     getAll: (chatId: string) => Promise<Message[]>
@@ -79,6 +82,9 @@ export interface Api {
   debug: {
     saveFile: (filename: string, buffer: ArrayBuffer) => Promise<{ success: boolean; error?: string }>
   }
+  export: {
+    chat: (chatId: string, format: 'markdown' | 'json') => Promise<{ success: boolean; error?: string }>
+  }
 }
 
 const api: Api = {
@@ -88,7 +94,9 @@ const api: Api = {
     create: (meta) => invoke('chats:create', meta),
     delete: (id) => invoke('chats:delete', id),
     updateTitle: (id, title) => invoke('chats:updateTitle', id, title),
-    updateMeta: (id, meta) => invoke('chats:updateMeta', id, meta)
+    updateMeta: (id, meta) => invoke('chats:updateMeta', id, meta),
+    updateFolder: (id, folder) => invoke('chats:updateFolder', id, folder),
+    getFolders: () => invoke('chats:getFolders'),
   },
   messages: {
     getAll: (chatId) => invoke('messages:getAll', chatId),
@@ -154,6 +162,9 @@ const api: Api = {
   },
   debug: {
     saveFile: (filename, buffer) => ipcRenderer.invoke('debug:saveFile', filename, buffer)
+  },
+  export: {
+    chat: (chatId, format) => ipcRenderer.invoke('export:chat', chatId, format)
   }
 }
 
